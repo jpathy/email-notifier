@@ -1,0 +1,26 @@
+/**
+!.gitignore
+
+# ci/editor conf whitelist
+!/.github/
+!/.github/**/
+!/.github/**/*.yml
+!/.vscode/
+!/.vscode/*.json
+
+# go module and source whitelist.
+!go.*
+!/**/*.go
+!/**/*.proto
+!/**/Makefile
+!/aws/
+!/aws/**/
+!/sesrcvr/
+!/sesrcvr/**/
+
+#sh file
+!/**/*.sh
+
+# terraform whiltelist.
+!/**/*.tf
+!/**/*.hcl

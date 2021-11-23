@@ -1,0 +1,5 @@
+{
+    "editor.foldingStrategy": "indentation",
+    "go.buildTags": "sqlite_json1 sqlite_foreign_keys",
+    "go.lintFlags": ["-tags", "sqlite_json1 sqlite_foreign_keys"]
+}

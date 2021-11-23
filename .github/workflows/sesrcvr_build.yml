@@ -1,0 +1,117 @@
+name: sesrcvr release
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sesrcvr_build.yml'
+      - 'sesrcvr/**/*.go'
+      - 'aws/submgr/events/**'
+      - 'aws/lambdaconf/**'
+    tags:
+      - 'v[0-9]*'
+    branches:
+      - '**'
+  workflow_dispatch:
+
+jobs:
+  Clean-Prerelease:
+    if: github.ref == 'refs/heads/trunk'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Delete pre-releases
+      uses: actions/github-script@v5
+      with:
+        github-token: ${{secrets.GITHUB_TOKEN}}
+        script: |
+          let base = {
+            owner: context.repo.owner,
+            repo: context.repo.repo
+          };
+          console.log("::group::Deleting Releases");
+          for await (const {data: rels} of github.paginate.iterator(
+            github.rest.repos.listReleases,
+            {
+              ...base,
+            }
+          )) {
+            rels.forEach(e => {
+              if (!Boolean(e.prerelease)) {
+                return;
+              }
+              if (e.tag_name.endsWith("-pre")) {
+                github.rest.repos.deleteRelease({
+                  ...base,
+                  release_id: e.id
+                });
+                github.rest.git.deleteRef({
+                  ...base,
+                  ref: `tags/${e.tag_name}`,
+                });
+                console.log(`Deleted release: ${e.name} and its tag: ${e.tag_name}`);
+              }
+            });
+          }
+          console.log("::endgroup::");
+          console.log("Finish.");
+#TODO: Add arm64 build, use cross-compilation
+  Build:
+    if: ${{ !failure() }}
+    needs: Clean-Prerelease
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.17-alpine3.14
+
+    steps:
+    - name: Install os packages
+      run: apk add bash git gcc musl-dev make
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+    - name: Go build
+      run: |
+        echo "::group::download module dependencies"
+        go mod download
+        echo "::endgroup::"
+        echo "::group::vet with shadow tool"
+        go install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest >/dev/null
+        export PATH="$PATH:$(go env GOPATH)/bin"
+        GOARGS=(-tags 'sqlite_json1 sqlite_foreign_keys')
+        go vet "${GOARGS[@]}"
+        go vet "${GOARGS[@]}" -vettool=$(which shadow)
+        echo "::endgroup::"
+        PKGVER="$(git describe --tags --exact-match 2>/dev/null || true)"
+        if [ -z "$PKGVER" ]; then
+          PKGVER="$(git describe --tags --candidates=1 --match='v[0-9]*' --always)-pre"
+        fi
+        make clean && make GOBUILDARGS="--ldflags '-X \"main.appVersion=${PKGVER}\" -linkmode external -extldflags \"-static\" -s -w'"
+        PKGOUT="sesrcvr-$(go env GOOS)-$(go env GOARCH)-${PKGVER}.tar.gz"
+        echo "PKGVER=$PKGVER" >> "$GITHUB_ENV"
+        tar czf "$PKGOUT" ./sesrcvr
+        echo "PKGOUT=$PKGOUT" >> "$GITHUB_ENV"
+      shell: bash
+      working-directory: ./sesrcvr
+    - name: Generate changelog
+      if: ${{ (github.ref == 'refs/heads/trunk') || startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        LASTTAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+        if [ -z "$LASTTAG" ]; then
+          REV="HEAD";
+        else
+          REV="${LASTTAG}..HEAD";
+        fi
+        CLPATH="./Changelog.md"
+        echo -e "## Changes\n\n<details>\n<summary>Click to view</summary>\n" >> "$CLPATH"
+        git log --no-decorate --oneline "$REV" | awk '{print "* "$0}' >> "$CLPATH"
+        echo -e "</details>" >> "$CLPATH"
+        echo "CLPATH=${CLPATH}" >> "$GITHUB_ENV"
+      shell: bash
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      if: ${{ (github.ref == 'refs/heads/trunk') || startsWith(github.ref, 'refs/tags/') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        files: ./sesrcvr/${{ env.PKGOUT }}
+        tag_name: ${{ env.PKGVER }}
+        body_path: ${{ env.CLPATH }}
+        prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}

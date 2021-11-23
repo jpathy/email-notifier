@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+option go_package = "github.com/jpathy/email-notifier/sesrcvr/ctrlrpc";
+package ctrlrpc;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+service ControlEndpoint {
+    rpc SetConfig(Config) returns(Result);
+    rpc GetConfig(google.protobuf.Empty) returns(Config);
+    rpc ListSub(google.protobuf.StringValue) returns(Subscriptions);
+    rpc EditSub(EditSubRequest) returns(Result);
+    rpc RemoveSub(google.protobuf.StringValue) returns(Result);
+    rpc GetErrors(google.protobuf.StringValue) returns(stream DeliveryError);
+    rpc GC(google.protobuf.Empty) returns(Result);
+}
+
+message Config {
+    map<string, string> keyvals = 1;
+}
+
+message EditSubRequest {
+    string topic_arn = 2;
+    string aws_cred = 3;
+    string delivery_template = 4;
+}
+
+message Subscription {
+    string sub_arn = 1;
+}
+
+message Subscriptions {
+    map<string, Subscription> values = 1;
+}
+
+message Result {
+    string message = 1;
+}
+
+message DeliveryError {
+    string id = 1;
+    string error_string = 2;
+}
