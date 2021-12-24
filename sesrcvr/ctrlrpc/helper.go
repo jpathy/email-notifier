@@ -18,7 +18,9 @@ func EncodeAWSCred(awsId, awsSecret string) string {
 }
 
 func DecodeAWSCred(s string) (awsId, awsSecret string, err error) {
-	if s := strings.SplitN(s, ":", 2); len(s) != 2 {
+	if len(s) == 0 {
+		err = fmt.Errorf("credential is empty")
+	} else if s := strings.SplitN(s, ":", 2); len(s) != 2 {
 		err = fmt.Errorf("invalid credential, missing ':' separator")
 	} else if bId, e := base64.RawStdEncoding.DecodeString(s[0]); e != nil {
 		err = fmt.Errorf("invalid aws access key id, %w", e)

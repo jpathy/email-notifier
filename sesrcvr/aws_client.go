@@ -1,4 +1,5 @@
 //go:build sqlite_json1 && sqlite_foreign_keys
+// +build sqlite_json1,sqlite_foreign_keys
 
 package main
 

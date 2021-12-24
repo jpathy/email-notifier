@@ -1,4 +1,5 @@
 //go:build sqlite_json1 && sqlite_foreign_keys
+// +build sqlite_json1,sqlite_foreign_keys
 
 package main
 
@@ -100,10 +101,10 @@ CREATE TRIGGER IF NOT EXISTS configRoUrlDel
 BEFORE DELETE ON CONFIG WHEN old.key = 'externUrl' AND nullif(trim(old.value), '') IS NOT NULL AND EXISTS (SELECT topicArn FROM subscriptions)
 BEGIN SELECT raise(ABORT, "can't change externUrl while subscriptions exist, this would require resubscribing with the updated url for all subscriptions"); END;
 CREATE TRIGGER IF NOT EXISTS configRoUrlUpd
-BEFORE UPDATE ON CONFIG WHEN old.key = 'externUrl' AND nullif(trim(old.value), '') IS NOT NULL AND EXISTS (SELECT topicArn FROM subscriptions)
+BEFORE UPDATE OF value ON CONFIG WHEN old.key = 'externUrl' AND nullif(trim(old.value), '') IS NOT NULL AND EXISTS (SELECT topicArn FROM subscriptions)
 BEGIN SELECT raise(ABORT, "can't change externUrl while subscriptions exist, this would require resubscribing with the updated url for all subscriptions"); END;
 END TRANSACTION`
-	setConfigSQL   = "INSERT OR REPLACE INTO config(key, value) VALUES(?, ?)"
+	setConfigSQL   = "INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value != excluded.value RETURNING value"
 	queryConfigSQL = "SELECT trim(value) FROM config where key = ?"
 
 	createSubTSQL = "CREATE TABLE IF NOT EXISTS subscriptions(topicArn TEXT PRIMARY KEY, auth TEXT DEFAULT (uuid_random()), awsCred TEXT, deliveryTemplate TEXT, subArn TEXT DEFAULT NULL) WITHOUT ROWID"
@@ -119,6 +120,7 @@ awsCred = coalesce(nullif(excluded.awsCred, ''), awsCred), deliveryTemplate = co
 // Globals & consts used by the server.
 const (
 	noColorEnv = "NOCOLORLOG"
+	noTSEnv    = "NOTIMESTAMPLOG"
 )
 
 var (
@@ -160,15 +162,22 @@ func initRun(verbosity int) (err error) {
 	}
 	logConf := zap.NewDevelopmentConfig()
 	logConf.Level.SetLevel(logLevel)
-	hasTColor := true
-	if nocolor := os.Getenv(noColorEnv); nocolor != "" {
-		var n int
-		if n, err = strconv.Atoi(nocolor); err == nil && n == 1 {
-			hasTColor = false
+
+	isDefined := func(key string) bool {
+		if s := os.Getenv(key); s != "" {
+			var n int
+			if n, err = strconv.Atoi(s); err == nil && n == 1 {
+				return true
+			}
 		}
+		return false
 	}
-	if hasTColor {
+
+	if !isDefined(noColorEnv) {
 		logConf.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	}
+	if isDefined(noTSEnv) {
+		logConf.EncoderConfig.TimeKey = ""
 	}
 	var l *zap.Logger
 	if l, err = logConf.Build(); err != nil {
@@ -846,8 +855,6 @@ type gcState struct {
 	collectThreshold *atomic.Uint32
 	scanPeriod       *atomic.Duration
 	tombCount        *atomic.Int64
-
-	triggerCh chan bool
 }
 
 const (
@@ -868,8 +875,8 @@ type SNSEndpoint struct {
 	msgCh    chan int64
 	procLock *semaphore.Weighted
 
+	gcTriggerCh chan bool
 	gcState
-	extUrl *atomic.String
 
 	ctrlSocketPath string
 	downloadDir    string
@@ -895,8 +902,8 @@ func NewSNSEndpoint(conf epDaemonConfig) (ep *SNSEndpoint, err error) {
 		if err = os.MkdirAll(conf.stateDir, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create config dir: %q, error: %w", conf.stateDir, err)
 		}
-	} else if !fi.IsDir() {
-		return nil, fmt.Errorf("confid path: %q must be a directory", conf.stateDir)
+	} else if fi.Mode()&os.ModeSymlink == 0 && !fi.IsDir() {
+		return nil, fmt.Errorf("config path: %q must be a directory", conf.stateDir)
 	}
 	dbPath := filepath.Join(conf.stateDir, dbFileName)
 	if dbPath, err = filepath.Abs(dbPath); err != nil {
@@ -977,14 +984,13 @@ func NewSNSEndpoint(conf epDaemonConfig) (ep *SNSEndpoint, err error) {
 		msgCh:    make(chan int64, msgQSize),
 		procLock: semaphore.NewWeighted(maxMessageProcessors),
 
+		gcTriggerCh: make(chan bool),
+
 		gcState: gcState{
 			collectThreshold: atomic.NewUint32(0),
 			scanPeriod:       atomic.NewDuration(0),
 			tombCount:        atomic.NewInt64(0),
-
-			triggerCh: make(chan bool),
 		},
-		extUrl: atomic.NewString(""),
 
 		ctrlSocketPath: ctrlSocketPath,
 		downloadDir:    downloadDir,
@@ -1006,6 +1012,7 @@ func (ep *SNSEndpoint) Run(ctx context.Context, doVacuum bool) error {
 	defer func() {
 		ep.db.Close()
 		ep.epState.Store(EpStateStopped)
+		_ = SvcNotifyStatus("sesrcvr stopped")
 	}()
 
 	if ep.epState.Load() != EpStateInit {
@@ -1014,6 +1021,7 @@ func (ep *SNSEndpoint) Run(ctx context.Context, doVacuum bool) error {
 
 	// Starting
 	ep.epState.Store(EpStateStarting)
+	_ = SvcNotifyStatus("Starting")
 
 	if doVacuum {
 		if _, err := ep.db.ExecContext(ctx, "VACUUM"); err != nil {
@@ -1052,6 +1060,16 @@ func (ep *SNSEndpoint) Run(ctx context.Context, doVacuum bool) error {
 	var err error
 	var conf *epConfig
 	var httpListener net.Listener
+
+	// Create a child context for sub-goroutines.
+	chldCtx, chldCancel := context.WithCancel(ctx)
+	defer chldCancel()
+
+	// Signal ready to svc manager.
+	if err = SvcReadyNotify(&wg, chldCtx); err != nil {
+		return err
+	}
+
 confCheckLoop:
 	for {
 		select {
@@ -1063,6 +1081,7 @@ confCheckLoop:
 				break confCheckLoop
 			} else {
 				sLog.Debug("Configuration error: ", err)
+				_ = SvcNotifyStatus("Waiting for config")
 			}
 		case <-ctx.Done():
 			break confCheckLoop
@@ -1089,13 +1108,13 @@ confCheckLoop:
 	if ep.db.QueryRowContext(ctx, garbageCountSQL).Scan(&garbageCount); err != nil {
 		return err
 	}
-	ep.tombCount.Store(garbageCount)
-	ep.collectThreshold.Store(conf.GCCollectThreshold)
-	ep.scanPeriod.Store(conf.GCScanInterval)
-	ep.extUrl.Store(conf.ExtUrl)
+	ep.tombCount.CAS(0, garbageCount)
+	ep.collectThreshold.CAS(0, conf.GCCollectThreshold)
+	ep.scanPeriod.CAS(0, conf.GCScanInterval)
 
 	// Config Ready
 	ep.epState.Store(EpStateConfigReady)
+	_ = SvcNotifyStatus("Config OK")
 
 	// now we replay failed/cancelled actions.
 	if err = ep.replayLog(ctx); err != nil {
@@ -1103,14 +1122,12 @@ confCheckLoop:
 	}
 
 	// Run the message processor in a child context.
-	procCtx, procCancel := context.WithCancel(ctx)
-	defer procCancel()
 	procErrCh := make(chan error, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
-		procErrCh <- ep.runMsgProc(procCtx)
+		procErrCh <- ep.runMsgProc(chldCtx)
 	}()
 
 	// Register this instance as the default handler.
@@ -1128,23 +1145,23 @@ confCheckLoop:
 		srvErrCh <- httpServer.Serve(httpListener)
 	}()
 
-	// run gcProc in a child context.
-	gcCtx, gcCancel := context.WithCancel(ctx)
-	defer gcCancel()
+	// run gcProc in the child context.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
-		ep.runGCProc(gcCtx)
+		ep.runGCProc(chldCtx)
 	}()
 
 	// Running.
 	ep.epState.Store(EpStateRunning)
+	_ = SvcNotifyStatus("Running")
 
 	stopServer := func() {
 		c, cancel := context.WithTimeout(ctx, shutdownTimeout)
 		defer cancel()
 
+		_ = SvcStopNotify()
 		// Stop CtrlServer.
 		ctrlServer.Stop()
 
@@ -1166,11 +1183,11 @@ confCheckLoop:
 	case <-ctx.Done():
 		stopServer()
 	case err = <-srvErrCh:
+		_ = SvcStopNotify()
 		// Stop CtrlServer.
 		ctrlServer.Stop()
-		// cancel message processor and gc context on any error.
-		procCancel()
-		gcCancel()
+		// cancel child context on any error.
+		chldCancel()
 
 		if err != http.ErrServerClosed {
 			err = fmt.Errorf("http server closed with error: %w", err)
@@ -1366,7 +1383,7 @@ Loop:
 				}
 				if ep.tombCount.Inc() >= int64(ep.collectThreshold.Load()) { // try trigger gc if threshold crossed
 					select {
-					case ep.triggerCh <- true:
+					case ep.gcTriggerCh <- true:
 					default:
 					}
 				}
@@ -1424,7 +1441,7 @@ Loop:
 		case <-ctx.Done():
 			sLog.Debug("gcProc() cancelled")
 			break Loop
-		case doGc := <-ep.gcState.triggerCh:
+		case doGc := <-ep.gcTriggerCh:
 			if !scanTimer.Stop() {
 				<-scanTimer.C
 			}
@@ -1602,6 +1619,65 @@ func (data *DeliveryData) MailPipeTo(cmd string, args ...string) (out string, er
 	<-ch
 	out = string(ob)
 	return
+}
+
+// Allowed Patterns:
+// domain.tld => matches all users for the specific domain(domain could be any nested sub domain).
+// .domain.tld => matches all users on all nested subdomains for domain.
+// user@domain.tld => matches the exact user for domain.tld.
+// user@ => matches user for any domain.
+// user can contain a detail(user+service) to match the exact detail, if not present it matches all details.
+func (data *DeliveryData) MatchRecipients(patterns ...string) (bool, error) {
+	// TODO:
+	//  Q: are recipients' domains punycode-encoded? investigate when i have one.
+	for _, r := range data.SESNotification.Receipt.Recipients {
+		addr, err := mail.ParseAddress(r)
+		var rcptLocalPart, rcptDomain string
+		if err != nil {
+			sLog.Errorw("Failed to parse recipient address", "recipient", r)
+			continue
+		} else if n := strings.LastIndexAny(addr.Address, "@"); n == -1 {
+			sLog.Debugw("Invalid email address", "recipient", addr.Address)
+			continue
+		} else {
+			rcptDomain = addr.Address[n+1:]
+			rcptLocalPart = addr.Address[:n]
+		}
+		rcptUser := rcptLocalPart
+		if n := strings.IndexAny(rcptLocalPart, "+"); n != -1 {
+			rcptUser = rcptLocalPart[:n]
+		}
+
+		for _, pat := range patterns {
+			if idx := strings.LastIndexAny(pat, "@"); idx != -1 { // pat = local@ | local@domain
+				if idx == 0 {
+					return false, fmt.Errorf("pattern: %s is invalid, localpart can't be empty", pat)
+				}
+				localPart := pat[:idx]
+				domain := pat[idx+1:]
+				if domain != "" && domain != rcptDomain { // different domain part
+					continue
+				}
+				var b bool
+				if strings.ContainsAny(localPart, "+") { // local = user+detail => exact match the localpart
+					b = rcptLocalPart == localPart
+				} else { // match the user of rcpt
+					b = rcptUser == localPart
+				}
+				if b {
+					return true, nil
+				}
+			} else if pat[0] == '.' { // pat = .domain => only subdomains allowed(pat is a suffix)
+				if strings.HasSuffix(rcptDomain, pat) {
+					return true, nil
+				}
+			} else if rcptDomain == pat { // pat = domain => exact match of domainpart
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }
 
 // Configuration validation
@@ -1783,7 +1859,7 @@ func (srv *EPRPCServer) GetConfig(ctx context.Context, _ *emptypb.Empty) (*ctrlr
 	}, nil
 }
 
-func (srv *EPRPCServer) SetConfig(ctx context.Context, in *ctrlrpc.Config) (*ctrlrpc.Result, error) {
+func (srv *EPRPCServer) SetConfig(ctx context.Context, in *ctrlrpc.Config) (*ctrlrpc.SetConfigResult, error) {
 	srv._cfgLock.Acquire(ctx, 1)
 	defer srv._cfgLock.Release(1)
 
@@ -1797,7 +1873,7 @@ func (srv *EPRPCServer) SetConfig(ctx context.Context, in *ctrlrpc.Config) (*ctr
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	var s string
+	var ks []string
 	var tx *sql.Tx
 	if tx, err = srv.ep.db.BeginTx(ctx, nil); err != nil {
 		return nil, fromContextErrCode(err, codes.Unavailable)
@@ -1811,11 +1887,14 @@ func (srv *EPRPCServer) SetConfig(ctx context.Context, in *ctrlrpc.Config) (*ctr
 
 		for _, k := range []string{ctrlrpc.UrlConfKey, ctrlrpc.AddressConfKey, ctrlrpc.GcScanPeriodKey, ctrlrpc.GcCollectThresholdKey} {
 			if v, ok := cfg[k]; ok {
-				if _, err = tx.ExecContext(ctx, setConfigSQL, k, v); err != nil {
-					err = fromContextErrCode(err, codes.Internal)
+				var _ignore string
+				// ErrNoRows => no update, not an error condition and has no changes.
+				if e := tx.QueryRowContext(ctx, setConfigSQL, k, v).Scan(&_ignore); e != nil && e != sql.ErrNoRows {
+					err = fromContextErrCode(e, codes.Internal)
 					return
+				} else if e == nil {
+					ks = append(ks, k)
 				}
-				s = strings.Join([]string{s, k}, ", ")
 			}
 		}
 		err = fromContextErrCode(tx.Commit(), codes.Unavailable)
@@ -1825,38 +1904,40 @@ func (srv *EPRPCServer) SetConfig(ctx context.Context, in *ctrlrpc.Config) (*ctr
 	}
 
 	// Update cache and server state as needed.
-	if len(uConf.ExtUrl) != 0 {
-		srv.ep.extUrl.Store(uConf.ExtUrl)
-	}
 	if uConf.GCScanInterval != 0 {
-		srv.ep.scanPeriod.Store(uConf.GCScanInterval)
-		// signal to restart the timer.
-		select {
-		case srv.ep.triggerCh <- false:
-		default:
+		if srv.ep.scanPeriod.Swap(uConf.GCScanInterval) != uConf.GCScanInterval { // changed scanPeriod
+			// signal to restart the timer.
+			select {
+			case srv.ep.gcTriggerCh <- false:
+			default:
+			}
 		}
 	}
 	if uConf.GCCollectThreshold != 0 {
 		srv.ep.collectThreshold.Store(uConf.GCCollectThreshold)
 	}
-	s = s[2:] // s always starts with the join sep(", ")
 
+	var needRestart bool
 	// Trigger confInit if it is waiting for good config.
 	if srv.ep.epState.Load() < EpStateRunning {
 		select {
 		case srv.ep.confInitCh <- struct{}{}:
 		default:
 		}
-	} else if _, ok := cfg[ctrlrpc.AddressConfKey]; ok && srv.ep.epState.Load() == EpStateRunning {
-		s += fmt.Sprintf("\nChanges to %s will take effect after the server is restarted.", ctrlrpc.AddressConfKey)
+	} else {
+		for _, v := range ks {
+			if v == ctrlrpc.AddressConfKey {
+				needRestart = true
+			}
+		}
 	}
 
-	return &ctrlrpc.Result{Message: "Set: " + s + "｡"}, nil
+	return &ctrlrpc.SetConfigResult{Changes: ks, RestartRequired: needRestart}, nil
 }
 
 func (srv *EPRPCServer) ListSub(_ context.Context, in *wrapperspb.StringValue) (*ctrlrpc.Subscriptions, error) {
 	if srv.ep.epState.Load() != EpStateRunning {
-		return nil, status.Error(codes.FailedPrecondition, "server not ready, requires valid configuration first")
+		return nil, status.Error(codes.Aborted, "server not ready, requires valid configuration first")
 	}
 
 	topicArn := in.GetValue()
@@ -1904,7 +1985,7 @@ func (srv *EPRPCServer) ListSub(_ context.Context, in *wrapperspb.StringValue) (
 
 func (srv *EPRPCServer) EditSub(ctx context.Context, in *ctrlrpc.EditSubRequest) (*ctrlrpc.Result, error) {
 	if srv.ep.epState.Load() != EpStateRunning {
-		return nil, status.Error(codes.FailedPrecondition, "server not ready, requires valid configuration first")
+		return nil, status.Error(codes.Aborted, "server not ready, requires valid configuration first")
 	}
 
 	var out string
@@ -1935,7 +2016,7 @@ func (srv *EPRPCServer) EditSub(ctx context.Context, in *ctrlrpc.EditSubRequest)
 	}
 	defer resume()
 
-	var created bool
+	var doCreate bool
 	if err = srv.ep.cachedSubs.withTopic(ctx, topicArn, func(ctx context.Context, sc **subscription) (err error) {
 		var uniqPath string
 		var tx *sql.Tx
@@ -1986,7 +2067,7 @@ func (srv *EPRPCServer) EditSub(ctx context.Context, in *ctrlrpc.EditSubRequest)
 			if err = tx.Commit(); err != nil {
 				return fromContextErrCode(err, codes.Unavailable)
 			}
-			created = *sc == nil || (*sc).SubscriptionArn == nil
+			doCreate = *sc == nil || (*sc).SubscriptionArn == nil
 			// update the cache.
 			*sc = &sub
 			return nil
@@ -1994,27 +2075,29 @@ func (srv *EPRPCServer) EditSub(ctx context.Context, in *ctrlrpc.EditSubRequest)
 			return err
 		}
 
-		if created {
-			if err = (*sc).SubMgr.Subscribe(ctx, topicArn, srv.ep.extUrl.Load()+uniqPath); err != nil {
+		if doCreate && len(inCred) != 0 { // Only if we have creds in the request.
+			var conf *epConfig
+			if conf, err = validateDBConf(ctx, srv.ep.db, true); err == nil {
+				err = (*sc).SubMgr.Subscribe(ctx, topicArn, conf.ExtUrl+uniqPath)
+			}
+			if err != nil {
 				return fromContextErrCode(err, codes.FailedPrecondition)
 			}
+			out = "Created subscription is pending confirmation(will be confirmed shortly)"
+		} else {
+			out = fmt.Sprintf("Updated: %s｡", strings.TrimRight(out, ","))
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 
-	if created {
-		out = "Created subscription is pending confirmation(will be confirmed shortly)"
-	} else {
-		out = fmt.Sprintf("Updated: %s｡", strings.TrimRight(out, ","))
-	}
 	return &ctrlrpc.Result{Message: out}, nil
 }
 
 func (srv *EPRPCServer) RemoveSub(ctx context.Context, in *wrapperspb.StringValue) (*ctrlrpc.Result, error) {
 	if srv.ep.epState.Load() != EpStateRunning {
-		return nil, status.Error(codes.FailedPrecondition, "server not ready, requires valid configuration first")
+		return nil, status.Error(codes.Aborted, "server not ready, requires valid configuration first")
 	}
 
 	topicArn := in.GetValue()
@@ -2088,12 +2171,12 @@ func (srv *EPRPCServer) GetErrors(in *wrapperspb.StringValue, errstream ctrlrpc.
 
 func (srv *EPRPCServer) GC(context.Context, *emptypb.Empty) (*ctrlrpc.Result, error) {
 	if srv.ep.epState.Load() != EpStateRunning {
-		return nil, status.Error(codes.FailedPrecondition, "server not ready, requires valid configuration first")
+		return nil, status.Error(codes.Aborted, "server not ready, requires valid configuration first")
 	}
 
 	s := "OK."
 	select {
-	case srv.ep.triggerCh <- true:
+	case srv.ep.gcTriggerCh <- true:
 		return &ctrlrpc.Result{Message: s}, nil
 	default:
 		return nil, status.Error(codes.AlreadyExists, "GC is already in progress.")

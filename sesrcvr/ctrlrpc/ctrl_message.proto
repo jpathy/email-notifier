@@ -7,7 +7,7 @@ import "google/protobuf/empty.proto";
 import "google/protobuf/wrappers.proto";
 
 service ControlEndpoint {
-    rpc SetConfig(Config) returns(Result);
+    rpc SetConfig(Config) returns(SetConfigResult);
     rpc GetConfig(google.protobuf.Empty) returns(Config);
     rpc ListSub(google.protobuf.StringValue) returns(Subscriptions);
     rpc EditSub(EditSubRequest) returns(Result);
@@ -18,6 +18,11 @@ service ControlEndpoint {
 
 message Config {
     map<string, string> keyvals = 1;
+}
+
+message SetConfigResult {
+    repeated string changes = 1;
+    bool restart_required = 2;
 }
 
 message EditSubRequest {

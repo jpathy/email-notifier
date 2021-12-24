@@ -20,7 +20,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControlEndpointClient interface {
-	SetConfig(ctx context.Context, in *Config, opts ...grpc.CallOption) (*Result, error)
+	SetConfig(ctx context.Context, in *Config, opts ...grpc.CallOption) (*SetConfigResult, error)
 	GetConfig(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*Config, error)
 	ListSub(ctx context.Context, in *wrappers.StringValue, opts ...grpc.CallOption) (*Subscriptions, error)
 	EditSub(ctx context.Context, in *EditSubRequest, opts ...grpc.CallOption) (*Result, error)
@@ -37,8 +37,8 @@ func NewControlEndpointClient(cc grpc.ClientConnInterface) ControlEndpointClient
 	return &controlEndpointClient{cc}
 }
 
-func (c *controlEndpointClient) SetConfig(ctx context.Context, in *Config, opts ...grpc.CallOption) (*Result, error) {
-	out := new(Result)
+func (c *controlEndpointClient) SetConfig(ctx context.Context, in *Config, opts ...grpc.CallOption) (*SetConfigResult, error) {
+	out := new(SetConfigResult)
 	err := c.cc.Invoke(ctx, "/ctrlrpc.ControlEndpoint/SetConfig", in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (c *controlEndpointClient) GC(ctx context.Context, in *empty.Empty, opts ..
 // All implementations must embed UnimplementedControlEndpointServer
 // for forward compatibility
 type ControlEndpointServer interface {
-	SetConfig(context.Context, *Config) (*Result, error)
+	SetConfig(context.Context, *Config) (*SetConfigResult, error)
 	GetConfig(context.Context, *empty.Empty) (*Config, error)
 	ListSub(context.Context, *wrappers.StringValue) (*Subscriptions, error)
 	EditSub(context.Context, *EditSubRequest) (*Result, error)
@@ -141,7 +141,7 @@ type ControlEndpointServer interface {
 type UnimplementedControlEndpointServer struct {
 }
 
-func (UnimplementedControlEndpointServer) SetConfig(context.Context, *Config) (*Result, error) {
+func (UnimplementedControlEndpointServer) SetConfig(context.Context, *Config) (*SetConfigResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetConfig not implemented")
 }
 func (UnimplementedControlEndpointServer) GetConfig(context.Context, *empty.Empty) (*Config, error) {

@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -30,8 +31,13 @@ import (
 	"github.com/jpathy/email-notifier/sesrcvr/ctrlrpc"
 )
 
-// This can be overridden using ldflags during linking.
-var appVersion = "unknown"
+const rtDirEnv = "XDG_RUNTIME_DIR"
+
+// These can be overridden using ldflags during linking.
+var (
+	appVersion   = "unknown"
+	tplEndMarker = "ENDTPL"
+)
 
 func runRootCmd(ctx context.Context) int {
 	cli.EnableCommandSorting = false
@@ -45,8 +51,8 @@ Useful when running an IMAP only server letting AWS do SMTP.`,
 		SilenceErrors:     true,
 		SilenceUsage:      true,
 	}
-	app.SetErr(nil)
-	app.SetOut(nil)
+	app.SetErr(os.Stderr)
+	app.SetOut(os.Stdout)
 
 	// Disable help command and hide help flags.
 	app.PersistentFlags().BoolP("help", "h", false, "show help")
@@ -56,7 +62,7 @@ Useful when running an IMAP only server letting AWS do SMTP.`,
 	app.LocalNonPersistentFlags().BoolP("version", "v", false, "show version")
 	app.AddCommand(runCmd())
 
-	defSocketPath, _ := os.UserCacheDir()
+	defSocketPath := os.Getenv(rtDirEnv)
 	defSocketPath = filepath.Join(defSocketPath, AppID, ctrlSockFileName)
 
 	for _, fn := range []func(*string, *time.Duration) *cli.Command{configCmd, subCmd, gcCmd} {
@@ -90,15 +96,10 @@ Useful when running an IMAP only server letting AWS do SMTP.`,
 }
 
 func runCmd() *cli.Command {
-	appCachePath, err := os.UserCacheDir()
-	if err != nil {
-		log.Println("failed to get UserCacheDir(), set PROGDIR to a directory path where program data will be stored", err)
-	}
+	appRuntimePath := filepath.Join(os.Getenv(rtDirEnv), AppID)
+	appCachePath, _ := os.UserCacheDir()
 	appCachePath = filepath.Join(appCachePath, AppID)
-	appConfigPath, err := os.UserConfigDir()
-	if err != nil {
-		log.Println("failed to get UserConfigDir(), set PROGDIR to a directory path where program data will be stored", err)
-	}
+	appConfigPath, _ := os.UserConfigDir()
 	appConfigPath = filepath.Join(appConfigPath, AppID)
 
 	var vacuum bool
@@ -159,7 +160,7 @@ All other commands need the server to be running.`,
 	cmd.Flags().CountVarP(&verbosity, "verbose", "v",
 		"enable verbose logging, specify multiple times to increase verbosity level(max: 3)")
 	cmd.Flags().BoolVar(&vacuum, "vacuum-db", false, "Vacuum the sqlite DB before starting")
-	cmd.Flags().StringVar(&runtimeDir, "runtime-dir", appCachePath, "runtime directory where lock file and control socket will be stored")
+	cmd.Flags().StringVar(&runtimeDir, "runtime-dir", appRuntimePath, "runtime directory where lock file and control socket will be stored")
 	cmd.Flags().StringVar(&cacheDir, "cache-dir", appCachePath, "cache directory for server cache")
 	cmd.Flags().StringVar(&stateDir, "state-dir", appConfigPath, "state directory where server config and state will be stored")
 
@@ -170,7 +171,7 @@ func withRpcClient(ctx context.Context, ctrlSocketPath string, timeout time.Dura
 	if !filepath.IsAbs(ctrlSocketPath) {
 		return fmt.Errorf("control socket path must be an absolute path, given: %q", ctrlSocketPath)
 	}
-	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix://%s", ctrlSocketPath), grpc.WithInsecure(), grpc.FailOnNonTempDialError(true), grpc.WithBlock())
+	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix://%s", ctrlSocketPath), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.FailOnNonTempDialError(true), grpc.WithBlock())
 	if err != nil {
 		return fmt.Errorf("failed to connect to control server: %v\nStart the server using `run` command first. If it's already running, verify the socket path and its permission", err)
 	}
@@ -232,11 +233,19 @@ Server must be running(see 'run') for it to work. When the server is 'run' for t
 					}
 					wr.Flush()
 				} else {
-					var res *ctrlrpc.Result
+					var res *ctrlrpc.SetConfigResult
 					if res, err = rpcClient.SetConfig(ctx, &ctrlrpc.Config{Keyvals: cfgs}); err != nil {
 						return err
 					}
-					cmd.Println(res.GetMessage())
+
+					var msg string
+					if len(res.Changes) != 0 {
+						msg = "Set: " + strings.Join(res.Changes, ", ") + "｡"
+					}
+					if res.RestartRequired {
+						msg = msg + "\nSome changes require a restart to take effect."
+					}
+					cmd.Println(msg)
 				}
 				return
 			})
@@ -297,7 +306,6 @@ func subCmd(ctrlSocketPath *string, timeout *time.Duration) *cli.Command {
 	}
 
 	readEditArgs := func(in *ctrlrpc.EditSubRequest, errln func(i ...interface{})) (err error) {
-		const MLENDMARKER = "ENDTPL"
 		isTerm, readPrompt, cleanup := getInput()
 		defer func() {
 			cleanup()
@@ -324,10 +332,10 @@ func subCmd(ctrlSocketPath *string, timeout *time.Duration) *cli.Command {
 			in.AwsCred = ctrlrpc.EncodeAWSCred(awsId, awsSecret)
 		}
 		if changeInstr {
-			prefix := fmt.Sprintf("Delivery Template(input line '%s' to finish)\r\n", MLENDMARKER)
+			prefix := fmt.Sprintf("Delivery Template(input line '%s' to finish)\r\n", tplEndMarker)
 			for {
 				var line string
-				if line, err = readPrompt("》", true, prefix); err != nil || line == "ENDTPL" {
+				if line, err = readPrompt("》", true, prefix); err != nil || line == tplEndMarker {
 					return
 				}
 				if len(in.DeliveryTemplate) == 0 {
@@ -342,7 +350,7 @@ func subCmd(ctrlSocketPath *string, timeout *time.Duration) *cli.Command {
 	}
 
 	addCmd := &cli.Command{
-		Use:     "add [--set opts] TopicARN",
+		Use:     "add TopicARN",
 		Aliases: []string{"a"},
 		Short:   "create/change a SNS subscription for the TopicARN",
 		Long: fmt.Sprintf(`Create/Update a subscription for TopicARN(which should be set to receive SES-S3 notifications) and prompts for AWS credentials(id, secret) and a delivery instruction.
@@ -355,12 +363,12 @@ On Delivery instruction:
   It must be golang text/template (https://pkg.go.dev/text/template#section-documentation), which is executed with value of type 'main.DeliveryData'.
   Methods available on 'DeliverData':
     MailPipeTo(cmd string, args ...string) (output string, err error)
+	MatchRecipients(patterns ...string) (ok bool, err error)
   Functions available for templates:
     parseAddress(address string)(*mail.Address, error)
 
 Make sure your 'externUrl' config is reachable by AWS infrastructure. Once you add subscribers 'externUrl' can't be changed without deleting them.
-On success it will create the sns subscription, which should be confirmed automatically. You can verify it with 'list' subcommand.
-Use '--set' options to update the subscription`, lambdaconf.SnsTagKeySubMgrLambda),
+On success it will create the sns subscription, which should be confirmed automatically. You can verify it with 'list' subcommand.`, lambdaconf.SnsTagKeySubMgrLambda),
 		Args: cli.ExactArgs(1),
 		RunE: func(cmd *cli.Command, args []string) error {
 			return withRpcClient(cmd.Context(), *ctrlSocketPath, *timeout, func(ctx context.Context, rpcClient ctrlrpc.ControlEndpointClient) (err error) {
@@ -494,7 +502,7 @@ Confirmed subs need to be deleted using '--force'. Any pending undelivered messa
 	cmd := &cli.Command{
 		Use:     "sub",
 		Aliases: []string{"s"},
-		Short:   "server to receive ses notifications for local mail delivery.",
+		Short:   "manage SES-SNS subscriptions",
 		Long:    "List/Add/Change/Delete a SNS Topic for subscription",
 	}
 	cmd.AddCommand(listCmd, addCmd, deleteCmd, errCmd)
