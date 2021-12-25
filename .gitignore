@@ -19,8 +19,11 @@
 !/sesrcvr/
 !/sesrcvr/**/
 
-#sh file
+#sh/nix file
 !/**/*.sh
+!/nixos/
+!/nixos/*.nix
+!/flake.*
 
 # terraform whiltelist.
 !/**/*.tf

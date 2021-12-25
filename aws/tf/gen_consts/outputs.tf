@@ -16,7 +16,7 @@ output "sns_topic_tag_key_dlq_url" {
 }
 
 output "sns_topic_tag_key_submgr_arn" {
-	value = "SubMgrLambda"
+  value = "SubMgrLambda"
 }
 
 output "sns_topic_tag_key_interim_lambda_arn" {

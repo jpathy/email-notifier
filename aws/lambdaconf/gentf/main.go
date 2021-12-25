@@ -46,7 +46,7 @@ output "sns_topic_tag_key_dlq_url" {
 }
 
 output "sns_topic_tag_key_submgr_arn" {
-	value = %q
+  value = %q
 }
 
 output "sns_topic_tag_key_interim_lambda_arn" {
