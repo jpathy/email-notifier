@@ -276,9 +276,12 @@ func subCmd(ctrlSocketPath *string, timeout *time.Duration) *cli.Command {
 				var input string
 				if scanner.Scan() {
 					input = scanner.Text()
-				}
-				if len(input) == 0 {
-					return "", io.EOF
+				} else {
+					err := scanner.Err()
+					if err == nil {
+						err = io.EOF
+					}
+					return "", err
 				}
 				return input, nil
 			}
@@ -338,7 +341,7 @@ func subCmd(ctrlSocketPath *string, timeout *time.Duration) *cli.Command {
 				if line, err = readPrompt("》", true, prefix); err != nil || line == tplEndMarker {
 					return
 				}
-				if len(in.DeliveryTemplate) == 0 {
+				if len(prefix) != 0 {
 					in.DeliveryTemplate = line
 					prefix = ""
 				} else {
