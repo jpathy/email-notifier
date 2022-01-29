@@ -69,7 +69,7 @@ func (m *MailContent) writeTo(w io.Writer) (err error) {
 	// Set empty return-path address, since we don't handle bounces/DSN.
 	m.entity.Header.Header.Set("Return-Path", "<>")
 
-	if err := msgproto.WriteHeader(w, m.entity.Header.Header); err != nil {
+	if err = msgproto.WriteHeader(w, m.entity.Header.Header); err != nil {
 		sLog.Errorw("Failed to write message header", "error", err)
 		return err
 	}
@@ -490,8 +490,8 @@ func (r *RspamdScanResult) Transform(mc *MailContent) error {
 			var idx int64
 			var hasVal, hasIdx bool
 			if m, ok := e.(map[string]interface{}); ok {
-				if v, ok := m["value"]; ok {
-					val, hasVal = v.(string)
+				if mv, ok := m["value"]; ok {
+					val, hasVal = mv.(string)
 					if n, ok := m["order"].(json.Number); ok {
 						var nerr error
 						idx, nerr = n.Int64()
