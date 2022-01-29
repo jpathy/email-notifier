@@ -125,7 +125,7 @@ func (data *DeliveryData) MailPipeTo(mods []MessageMods, cmd string, args ...str
 		mc.entity.Header.Del("Return-Path")
 		mc.entity.Header.AddRaw([]byte(
 			fmt.Sprintf(
-				"Received: (sesrcvr %d invoked by uid %d);\n %s -0000",
+				"Received: (sesrcvr %d invoked by uid %d);\n %s -0000\r\n",
 				os.Getpid(), os.Geteuid(),
 				time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05")), //RFC 5322 date-time
 		))
