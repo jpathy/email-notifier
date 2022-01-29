@@ -23,7 +23,8 @@
 !/**/*.sh
 !/nixos/
 !/nixos/*.nix
-!/flake.*
+!/*.nix
+!/flake.lock
 
 # terraform whiltelist.
 !/**/*.tf
