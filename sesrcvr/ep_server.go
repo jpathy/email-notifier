@@ -24,7 +24,6 @@ import (
 	"net/mail"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -551,6 +550,12 @@ type subscription struct {
 func makeDeliveryInstr(name string, text string) (t *template.Template, err error) {
 	tmplFuncs := template.FuncMap{
 		"parseAddress": mail.ParseAddress,
+		"msgmods":      mailMessageMods,
+		"add_hdr":      mailAddHeader,
+		"ins_hdr":      mailInsertHeader,
+		"chg_hdr":      mailReplaceHeader,
+		"rm_hdr":       mailRemoveHeader,
+		"deliver_to":   mailDeliverTo,
 	}
 	t = template.New(name)
 	t.Funcs(tmplFuncs)
@@ -1278,6 +1283,7 @@ Loop:
 				var msgid string
 
 				defer func() {
+					// TODO: Queue with retry timer for failed deliveries.
 					if err != nil && len(msgid) != 0 {
 						if _, err = ep.db.ExecContext(ctx, recordExecErrorSQL, msgid, err.Error()); err != nil {
 							sLog.Warnw("Failed to record execution error", "msgid", msgid, "error", err)
@@ -1369,7 +1375,7 @@ Loop:
 				}
 
 				var output strings.Builder
-				dData := DeliveryData{ctx: ctx, SESNotification: sesMsg, MailContent: f}
+				dData := DeliveryData{ctx: ctx, SESNotification: sesMsg, mailReader: f}
 
 				if err = deliveryInstr.Execute(&output, &dData); err != nil {
 					sLog.Errorf("Failed to deliver email for topic: %s, messageId: %s, error: %v", topicArn, msgid, err)
@@ -1587,97 +1593,6 @@ Loop:
 
 		dbConn.Close()
 	}
-}
-
-type DeliveryData struct {
-	ctx context.Context
-	SESNotification
-	MailContent io.ReadSeeker
-}
-
-func (data *DeliveryData) MailPipeTo(cmd string, args ...string) (out string, err error) {
-	c := exec.CommandContext(data.ctx, cmd, args...)
-	var w io.WriteCloser
-	if w, err = c.StdinPipe(); err != nil {
-		return
-	}
-
-	ch := make(chan struct{})
-	go func() {
-		defer w.Close()
-		data.MailContent.Seek(0, io.SeekStart)
-		io.Copy(w, data.MailContent)
-		data.MailContent.Seek(0, io.SeekStart)
-		close(ch)
-	}()
-
-	var ob []byte
-	if ob, err = c.Output(); err != nil {
-		return
-	}
-
-	<-ch
-	out = string(ob)
-	return
-}
-
-// Allowed Patterns:
-// domain.tld => matches all users for the specific domain(domain could be any nested sub domain).
-// .domain.tld => matches all users on all nested subdomains for domain.
-// user@domain.tld => matches the exact user for domain.tld.
-// user@ => matches user for any domain.
-// user can contain a detail(user+service) to match the exact detail, if not present it matches all details.
-func (data *DeliveryData) MatchRecipients(patterns ...string) (bool, error) {
-	// TODO:
-	//  Q: are recipients' domains punycode-encoded? investigate when i have one.
-	for _, r := range data.SESNotification.Receipt.Recipients {
-		addr, err := mail.ParseAddress(r)
-		var rcptLocalPart, rcptDomain string
-		if err != nil {
-			sLog.Errorw("Failed to parse recipient address", "recipient", r)
-			continue
-		} else if n := strings.LastIndexAny(addr.Address, "@"); n == -1 {
-			sLog.Debugw("Invalid email address", "recipient", addr.Address)
-			continue
-		} else {
-			rcptDomain = addr.Address[n+1:]
-			rcptLocalPart = addr.Address[:n]
-		}
-		rcptUser := rcptLocalPart
-		if n := strings.IndexAny(rcptLocalPart, "+"); n != -1 {
-			rcptUser = rcptLocalPart[:n]
-		}
-
-		for _, pat := range patterns {
-			if idx := strings.LastIndexAny(pat, "@"); idx != -1 { // pat = local@ | local@domain
-				if idx == 0 {
-					return false, fmt.Errorf("pattern: %s is invalid, localpart can't be empty", pat)
-				}
-				localPart := pat[:idx]
-				domain := pat[idx+1:]
-				if domain != "" && domain != rcptDomain { // different domain part
-					continue
-				}
-				var b bool
-				if strings.ContainsAny(localPart, "+") { // local = user+detail => exact match the localpart
-					b = rcptLocalPart == localPart
-				} else { // match the user of rcpt
-					b = rcptUser == localPart
-				}
-				if b {
-					return true, nil
-				}
-			} else if pat[0] == '.' { // pat = .domain => only subdomains allowed(pat is a suffix)
-				if strings.HasSuffix(rcptDomain, pat) {
-					return true, nil
-				}
-			} else if rcptDomain == pat { // pat = domain => exact match of domainpart
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
 }
 
 // Configuration validation
