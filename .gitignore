@@ -30,3 +30,7 @@
 !/**/*.tf
 !/**/*.hcl
 !/**/.terraformignore
+
+# docs
+!/doc/
+!/doc/**

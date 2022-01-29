@@ -1,0 +1,19 @@
+{{- $t := "catchall@example.com" }}
+{{- if ($.MatchRecipients "admin@example.com" "user1@example.com" "user1@user1.example.com") }}
+  {{- $t = "user1" }}
+{{- else if ($.MatchRecipients "user2@example.com" "user2@user2.example.com") }}
+  {{- $t = "user2" }}
+{{- end }}
+{{- if $t }}
+  {{- $m := "INBOX" }}
+  {{- $d := print $t "@example.com" }}{{- /* assuming all users have mailboxes AT example.com */ }}
+  {{- $sc := $.ScanWithRspamd "/run/rspamd/controller.sock" "Deliver-To" $d }}
+  {{- with $r := $.SESNotification.Receipt }}
+    {{- if or (eq $r.VirusVerdict.Status "FAIL") (and (ne $r.SpamVerdict.Status "PASS") (ne $r.SPFVerdict.Status "PASS") (ne $r.DKIMVerdict.Status "PASS")) }}
+      {{- $m = "Junk" }}marked spam,
+    {{- end }}
+  {{- end }}
+  {{- $.MailPipeTo (msgmods (deliver_to $d) $sc) "/usr/local/libexec/dovecot/dovecot-lda" "-e" "-d" $d "-m" $m }}delivery OK.
+{{- else }}
+  {{- "WARN: no catchAllTarget set and recipient pattern didn't match, IGNORED" }}
+{{- end }}
