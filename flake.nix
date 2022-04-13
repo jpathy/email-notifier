@@ -10,10 +10,10 @@
     overlay = final: prev: {
       sesrcvr = with final; buildGo117Module rec {
         pname = "sesrcvr";
-        version = "1.2";
+        version = "1.2.1";
 
         src = ./.;
-        vendorSha256 = "sha256-5VHsFQ8isL/l2FH/bW9PB8+6RNsFKCk3AfQG65toV0k=";
+        vendorSha256 = "sha256-AELdIPH3gp92s6yZw2gQJ/TVr5QWyzs5+/knlX0xAKE=";
 
         subPackages = [ "sesrcvr" ];
         tags = [
