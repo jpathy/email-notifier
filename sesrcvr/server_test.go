@@ -149,7 +149,41 @@ Here is my message.
 	if err = mc.writeTo(&out); err != nil {
 		t.Errorf("Failed to write message, error: %s", err)
 	}
-	if o := out.String(); strings.Replace(expectedData, "\n", "\r\n", mc.entity.Header.Len()+1) != o {
+	if o := out.String(); strings.Replace(expectedData, "\n", "\r\n", mc.hdr.Len()+1) != o {
+		t.Log(o)
+		t.Error("Test failure: expected data mismatch")
+	}
+}
+
+func TestMessageBody1(t *testing.T) {
+	data := `Return-Path: <>
+Received: (test program); Wed, 23 May 2042 13:37:69 +0020
+From: test@example.com
+To: contact@example.com
+Subject: A test message
+Date: Wed, 23 May 2042 13:37:69 +0000
+Message-ID: <0000000@localhost/>
+Mime-Version: 1.0
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+
+VGhpcyBpcyBhIHRlc3QgdGV4dCBtZXNzYWdlCg==
+`
+
+	var mc *MailContent
+	var err error
+	if err = initRun(3); err != nil {
+		t.Fatal("initRun failed:", err)
+	}
+	if mc, err = NewMailContent(strings.NewReader(data)); err != nil {
+		t.Fatalf("Failed to read message, error: %s", err)
+	}
+
+	var out strings.Builder
+	if err = mc.writeTo(&out); err != nil {
+		t.Errorf("Failed to write message, error: %s", err)
+	}
+	if o := out.String(); strings.Replace(data, "\n", "\r\n", mc.hdr.Len()+1) != o {
 		t.Log(o)
 		t.Error("Test failure: expected data mismatch")
 	}

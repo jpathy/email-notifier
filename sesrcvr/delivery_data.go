@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/mail"
@@ -15,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-message"
 	msgproto "github.com/emersion/go-message/textproto"
 )
 
@@ -34,17 +36,36 @@ type headerField struct {
 }
 
 type MailContent struct {
-	lhdrs  []headerField
-	entity message.Entity
+	lhdrs []headerField
+	hdr   msgproto.Header
+	body  io.Reader
 }
 
+// We avoid using message.New() since it uses encodingReader(..)/charsetReader(..) as body.
+// We don't modify content-type/content-transfer-encoding, hence we just use the reader as-is after reading the header.
+// As of: https://github.com/emersion/go-message/blob/e8079699eb3a41bb9f0b807d2661ba43f603361a/entity.go
+// We will not need this when https://github.com/emersion/go-message/issues/86 gets fixed.
+
+const maxMimeHeaderBytes = 1 << 20
+
+var errHeaderTooBig = errors.New("message: header exceeds maximum size")
+
 func NewMailContent(r io.Reader) (*MailContent, error) {
-	e, err := message.Read(r)
-	if e == nil {
+	lr := &io.LimitedReader{R: r, N: maxMimeHeaderBytes}
+	br := bufio.NewReader(lr)
+
+	h, err := msgproto.ReadHeader(br)
+	if err == io.EOF && lr.N <= 0 {
+		return nil, errHeaderTooBig
+	} else if err != nil {
 		return nil, err
 	}
+
+	lr.N = math.MaxInt64
+
 	return &MailContent{
-		entity: *e,
+		hdr:  h,
+		body: br,
 	}, err
 }
 
@@ -52,9 +73,9 @@ func NewMailContent(r io.Reader) (*MailContent, error) {
 func (m *MailContent) writeTo(w io.Writer) (err error) {
 	for i := len(m.lhdrs) - 1; i >= 0; i-- {
 		if v := m.lhdrs[i]; v.raw == nil {
-			m.entity.Header.Add(v.key, v.value)
+			m.hdr.Add(v.key, v.value)
 		} else {
-			m.entity.Header.AddRaw(v.raw)
+			m.hdr.AddRaw(v.raw)
 		}
 	}
 
@@ -62,19 +83,19 @@ func (m *MailContent) writeTo(w io.Writer) (err error) {
 	m.lhdrs = nil
 
 	// If the message uses MIME, it has to include MIME-Version
-	if !m.entity.Header.Header.Has("Mime-Version") {
-		m.entity.Header.Header.Set("MIME-Version", "1.0")
+	if !m.hdr.Has("Mime-Version") {
+		m.hdr.Set("MIME-Version", "1.0")
 	}
 
 	// Set empty return-path address, since we don't handle bounces/DSN.
-	m.entity.Header.Header.Set("Return-Path", "<>")
+	m.hdr.Set("Return-Path", "<>")
 
-	if err = msgproto.WriteHeader(w, m.entity.Header.Header); err != nil {
+	if err = msgproto.WriteHeader(w, m.hdr); err != nil {
 		sLog.Errorw("Failed to write message header", "error", err)
 		return err
 	}
 
-	_, err = io.Copy(w, m.entity.Body)
+	_, err = io.Copy(w, m.body)
 	return
 }
 
@@ -109,7 +130,7 @@ func (data *DeliveryData) MailPipeTo(mods []MessageMods, cmd string, args ...str
 
 		data.mailReader.Seek(0, io.SeekStart)
 		mc, gerr := NewMailContent(data.mailReader)
-		if gerr != nil && !message.IsUnknownCharset(gerr) && !message.IsUnknownEncoding(gerr) {
+		if gerr != nil {
 			sLog.Errorw("Failed to parse mail, skipping header transforms", "messageId", msgId, "error", gerr)
 			data.mailReader.Seek(0, io.SeekStart)
 			_, gerr = io.Copy(w, data.mailReader)
@@ -121,9 +142,9 @@ func (data *DeliveryData) MailPipeTo(mods []MessageMods, cmd string, args ...str
 			gerr = nil
 		}
 
-		origReturn := mc.entity.Header.Get("Return-Path")
-		mc.entity.Header.Del("Return-Path")
-		mc.entity.Header.AddRaw([]byte(
+		origReturn := mc.hdr.Get("Return-Path")
+		mc.hdr.Del("Return-Path")
+		mc.hdr.AddRaw([]byte(
 			fmt.Sprintf(
 				"Received: (sesrcvr %d invoked by uid %d);\n %s -0000\r\n",
 				os.Getpid(), os.Geteuid(),
@@ -263,11 +284,11 @@ switchL:
 				}
 			}
 			mc.lhdrs = mc.lhdrs[:i]
-			mc.entity.Header.Del(h.key)
+			mc.hdr.Del(h.key)
 			break
 		}
 
-		kfs := mc.entity.Header.FieldsByKey(h.key)
+		kfs := mc.hdr.FieldsByKey(h.key)
 		var ps []int
 		for i, e := range mc.lhdrs {
 			if e.key == h.key {
@@ -311,8 +332,8 @@ switchL:
 			}
 		}
 
-		if mc.entity.Header.Has(h.key) {
-			for fs := mc.entity.Header.Fields(); fs.Next(); {
+		if mc.hdr.Has(h.key) {
+			for fs := mc.hdr.Fields(); fs.Next(); {
 				k := fs.Key()
 				if k == h.key {
 					if cur == ci {
@@ -335,10 +356,10 @@ switchL:
 		fallthrough
 	case addHeader:
 		// append ~ insert at totallen() position(0-based) at this order.
-		h.index = len(mc.lhdrs) + mc.entity.Header.Len()
+		h.index = len(mc.lhdrs) + mc.hdr.Len()
 		fallthrough
 	case insertHeader:
-		nb := len(mc.lhdrs) + mc.entity.Header.Len()
+		nb := len(mc.lhdrs) + mc.hdr.Len()
 		if h.index < 0 {
 			h.index += nb
 		}
@@ -346,7 +367,7 @@ switchL:
 			h.index = nb
 		}
 		if h.index >= len(mc.lhdrs) {
-			for i, fs := len(mc.lhdrs), mc.entity.Header.Fields(); i < h.index && fs.Next(); i++ {
+			for i, fs := len(mc.lhdrs), mc.hdr.Fields(); i < h.index && fs.Next(); i++ {
 				var b []byte
 				if b, err = fs.Raw(); err != nil {
 					return
