@@ -64,7 +64,9 @@ jobs:
     steps:
     - name: Install os packages
       run: apk add bash git gcc musl-dev make protobuf
-    - uses: actions/checkout@v2
+    - name: Checkout bug workaround
+      run: git config --global --add safe.directory /__w/email-notifier/email-notifier
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - name: Go build
