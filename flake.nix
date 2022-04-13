@@ -7,7 +7,7 @@
   };
 
   outputs = inputs@{ self, nixpkgs, utils }: rec {
-    overlay = final: prev: {
+    overlays.default = final: prev: {
       sesrcvr = with final; buildGo117Module rec {
         pname = "sesrcvr";
         version = "1.2.1";
@@ -38,21 +38,22 @@
       };
     };
 
-    nixosModules.sesrcvr = import ./nixos;
-    nixosModule = nixosModules.sesrcvr;
+    nixosModules.default = import ./nixos;
   } //
   (utils.lib.eachDefaultSystem (system:
     let
-      pkgs = import nixpkgs { inherit system; overlays = [ self.overlay ]; };
+      pkgs = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
     in
     rec {
-      defaultPackage = packages.sesrcvr;
-      packages = utils.lib.flattenTree {
+      packages = utils.lib.flattenTree rec {
         sesrcvr = pkgs.sesrcvr;
+        default = sesrcvr;
       };
 
-      apps.sesrcvr = utils.lib.mkApp { drv = packages.sesrcvr; };
-      defaultApp = apps.sesrcvr;
+      apps = rec {
+        sesrcvr = utils.lib.mkApp { drv = packages.sesrcvr; };
+        default = sesrcvr;
+      };
     })
   );
 }
