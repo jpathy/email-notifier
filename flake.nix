@@ -8,12 +8,12 @@
 
   outputs = inputs@{ self, nixpkgs, utils }: rec {
     overlays.default = final: prev: {
-      sesrcvr = with final; buildGo117Module rec {
+      sesrcvr = with final; buildGo118Module rec {
         pname = "sesrcvr";
-        version = "1.2.1";
+        version = "1.2.2";
 
         src = ./.;
-        vendorSha256 = "sha256-AELdIPH3gp92s6yZw2gQJ/TVr5QWyzs5+/knlX0xAKE=";
+        vendorSha256 = "sha256-Z0o+BNscSLYu5Q95UtDMwfYMMKmvxF4v3hr8LLVqoLk=";
 
         subPackages = [ "sesrcvr" ];
         tags = [
