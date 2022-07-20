@@ -5,20 +5,34 @@ locals {
 
 resource "aws_s3_bucket" "ses_bucket" {
   bucket = "${var.stack}-store-${data.aws_caller_identity.current.account_id}"
-  acl    = "private"
-  versioning {
-    enabled = true
-  }
-  lifecycle_rule {
-    id      = "cleanup-deleted-older-than-6month"
-    enabled = true
+}
 
-    abort_incomplete_multipart_upload_days = 1
+resource "aws_s3_bucket_acl" "ses_bucket_acl" {
+  bucket = aws_s3_bucket.ses_bucket.id
+  acl    = "private"
+}
+
+resource "aws_s3_bucket_versioning" "ses_bucket_versioning" {
+  bucket = aws_s3_bucket.ses_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "ses_bucket_lifecycle" {
+  bucket = aws_s3_bucket.ses_bucket.id
+  rule {
+    id     = "cleanup-deleted-older-than-6month"
+    status = "Enabled"
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
     expiration {
       expired_object_delete_marker = true
     }
     noncurrent_version_expiration {
-      days = 180
+      noncurrent_days = 180
     }
   }
 }
@@ -32,14 +46,14 @@ resource "aws_s3_bucket_public_access_block" "ses_bucket_block_public" {
   ignore_public_acls      = true
 }
 
-resource "aws_s3_bucket_object" "s3_emails_dir" {
+resource "aws_s3_object" "s3_emails_dir" {
   for_each = toset(keys(var.ses_domain_addresses))
 
   bucket = aws_s3_bucket.ses_bucket.id
   key    = "${local.email_dirname}/${each.key}/"
 }
 
-resource "aws_s3_bucket_object" "s3_dmarc_reports_dir" {
+resource "aws_s3_object" "s3_dmarc_reports_dir" {
   bucket = aws_s3_bucket.ses_bucket.id
   key    = "${local.dmarc_dirname}/"
 }
