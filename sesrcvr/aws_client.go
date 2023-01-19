@@ -63,7 +63,7 @@ Retry:
 	n, err = r.body.Read(p)
 	if err != nil {
 		var errNet net.Error
-		if errors.As(err, &errNet) && (errNet.Temporary() || errNet.Timeout()) {
+		if errors.As(err, &errNet) && errNet.Timeout() {
 			r.body = nil
 			goto Retry
 		}

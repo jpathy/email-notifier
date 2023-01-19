@@ -69,7 +69,7 @@ func NewMailContent(r io.Reader) (*MailContent, error) {
 	}, err
 }
 
-// TODO: ``Content-Type''/``Content-Transfer-Encoding'' changes should affect body, currently these changes are not allowed.
+// TODO: “Content-Type”/“Content-Transfer-Encoding” changes should affect body, currently these changes are not allowed.
 func (m *MailContent) writeTo(w io.Writer) (err error) {
 	for i := len(m.lhdrs) - 1; i >= 0; i-- {
 		if v := m.lhdrs[i]; v.raw == nil {
@@ -253,7 +253,7 @@ type HeaderMod struct {
 	value string
 }
 
-// Note: ``Content-Type'' / ``Content-Transfer-Encoding'' header changes are ignored.
+// Note: “Content-Type” / “Content-Transfer-Encoding” header changes are ignored.
 func (h HeaderMod) Transform(mc *MailContent) (err error) {
 	if h.key == textproto.CanonicalMIMEHeaderKey("Content-Type") || h.key == textproto.CanonicalMIMEHeaderKey("Content-Transfer-Encoding") {
 		return fmt.Errorf("content type/encoding modifications are not allowed")
@@ -387,7 +387,7 @@ switchL:
 	return
 }
 
-// mailAddHeader appends header ``key'' with ``value'' at the end of header list.
+// mailAddHeader appends header “key” with “value” at the end of header list.
 func mailAddHeader(key string, value string) HeaderMod {
 	return HeaderMod{
 		op:    addHeader,
@@ -396,7 +396,7 @@ func mailAddHeader(key string, value string) HeaderMod {
 	}
 }
 
-// Insert ``Index''th (key, value) header field(0-based indexing).
+// Insert “Index”th (key, value) header field(0-based indexing).
 // [0] = "Received" header added by us(after removing the return-path).
 func mailInsertHeader(key string, value string, idx int) HeaderMod {
 	return HeaderMod{
@@ -407,7 +407,7 @@ func mailInsertHeader(key string, value string, idx int) HeaderMod {
 	}
 }
 
-// Remove ``idx''th value for header name ``Key''(1-based indexing)(0 => remove all, negative => from the end).
+// Remove “idx”th value for header name “Key”(1-based indexing)(0 => remove all, negative => from the end).
 func mailRemoveHeader(key string, idx int) HeaderMod {
 	return HeaderMod{
 		op:    removeHeader,
@@ -416,7 +416,7 @@ func mailRemoveHeader(key string, idx int) HeaderMod {
 	}
 }
 
-// Replace ``idx''th value with ``value'' for key ``key'', idx = positive integer(1-based indexing), negative/0 idx is ignored.
+// Replace “idx”th value with “value” for key “key”, idx = positive integer(1-based indexing), negative/0 idx is ignored.
 func mailReplaceHeader(key string, value string, idx int) HeaderMod {
 	return HeaderMod{op: changeHeader, key: textproto.CanonicalMIMEHeaderKey(key), value: value, index: idx}
 }
@@ -592,14 +592,15 @@ func rspamdHttpClient(addr string) (*http.Client, error) {
 }
 
 // ScanWithRspamd scans the email message with rspamd, returns error only for invalid arguments, scan errors are returned in RspamdScanResult.Error.
-// ``address'' is interpreted as unix socket path if it starts with a '/'(has to absoluted path) or tcp socket given as ``host:port".
-// `kvs'' are extra http headers that can be passed to rspamd: https://rspamd.com/doc/architecture/protocol.html#http-headers.
+// “address” is interpreted as unix socket path if it starts with a '/'(has to be absolute path) or tcp socket given as “host:port”.
+// “kvs” are extra http headers that can be passed to rspamd: https://rspamd.com/doc/architecture/protocol.html#http-headers.
 // The following headers are passed in request by default(can be overridden):
-//   Flags: milter,groups
-//   From:  data.SESNotification.Mail.Source
-//   Rcpt:  data.SESNotification.Receipt.Recipients
-//   Subject: data.SESNotification.Mail.CommonHeaders.Subject
-//   Queue-Id: data.SESNotification.Mail.MessageId
+//
+//	Flags: milter,groups
+//	From:  data.SESNotification.Mail.Source
+//	Rcpt:  data.SESNotification.Receipt.Recipients
+//	Subject: data.SESNotification.Mail.CommonHeaders.Subject
+//	Queue-Id: data.SESNotification.Mail.MessageId
 func (data *DeliveryData) ScanWithRspamd(address string, kvs ...string) (*RspamdScanResult, error) {
 	hdrs := make(http.Header)
 	for i := 0; i < len(kvs); i += 2 {

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"net"
@@ -50,7 +49,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/go-retryablehttp"
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/mattn/go-sqlite3"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -126,7 +125,7 @@ var (
 	sLog *zap.SugaredLogger
 
 	snsKeyToFieldIdx = make(map[string]int)
-	signingCertCache *lru.Cache
+	signingCertCache *lru.Cache[string, *x509.Certificate]
 
 	retryHttp *http.Client
 
@@ -188,7 +187,7 @@ func initRun(verbosity int) (err error) {
 	}
 	sLog.Info("Log level set to ", logLevel)
 
-	if signingCertCache, err = lru.New(64); err != nil {
+	if signingCertCache, err = lru.New[string, *x509.Certificate](64); err != nil {
 		return
 	}
 
@@ -238,7 +237,7 @@ Loop:
 			return
 		}
 
-		r, err = ioutil.ReadAll(resp.Body)
+		r, err = io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			jitterTm.Reset(jitter()) // set a delay timer
@@ -495,7 +494,7 @@ func fetchCertificate(ctx context.Context, urlString string, force bool) (x509Ce
 	}
 
 	if cert, ok := signingCertCache.Get(urlString); ok {
-		x509Cert = cert.(*x509.Certificate)
+		x509Cert = cert
 		cacheHit = true
 		return
 	}
@@ -1113,9 +1112,9 @@ confCheckLoop:
 	if ep.db.QueryRowContext(ctx, garbageCountSQL).Scan(&garbageCount); err != nil {
 		return err
 	}
-	ep.tombCount.CAS(0, garbageCount)
-	ep.collectThreshold.CAS(0, conf.GCCollectThreshold)
-	ep.scanPeriod.CAS(0, conf.GCScanInterval)
+	ep.tombCount.CompareAndSwap(0, garbageCount)
+	ep.collectThreshold.CompareAndSwap(0, conf.GCCollectThreshold)
+	ep.scanPeriod.CompareAndSwap(0, conf.GCScanInterval)
 
 	// Config Ready
 	ep.epState.Store(EpStateConfigReady)
@@ -1439,7 +1438,7 @@ func (ep *SNSEndpoint) runGCProc(ctx context.Context) {
 	}
 	defer incTm.Stop()
 
-	bucketDelReady, _ := lru.New(64)
+	bucketDelReady, _ := lru.New[string, bool](64)
 Loop:
 	for {
 		resetScanTimer()
@@ -1548,8 +1547,8 @@ Loop:
 
 				for _, g := range toDelete {
 					for b, os := range g.objs {
-						var canDel bool
-						if ready, ok := bucketDelReady.Get(b); !ok {
+						var canDel, ok bool
+						if canDel, ok = bucketDelReady.Get(b); !ok {
 							var verOut *s3.GetBucketVersioningOutput
 							if verOut, err = g.s3Client.GetBucketVersioningWithContext(ctx, &s3.GetBucketVersioningInput{Bucket: &b}); err != nil {
 								if ctx.Err() == nil {
@@ -1562,8 +1561,6 @@ Loop:
 								canDel = (*verOut.Status == s3.BucketVersioningStatusEnabled) && (verOut.MFADelete == nil || *verOut.MFADelete == s3.MFADeleteDisabled)
 								bucketDelReady.Add(b, canDel)
 							}
-						} else {
-							canDel = ready.(bool)
 						}
 						if canDel && g.s3Client != nil {
 							var res *s3.DeleteObjectsOutput

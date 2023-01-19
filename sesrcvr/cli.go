@@ -364,11 +364,26 @@ AWS credential MUST have the following permissions:
   And optionally 'kms:Decrypt' access to the KMS key if used for client-side encryption of Emails. SNS Topic, submgr lambda and S3 bucket MUST be in the same region.
 On Delivery instruction:
   It must be golang text/template (https://pkg.go.dev/text/template#section-documentation), which is executed with value of type 'main.DeliveryData'.
-  Methods available on 'DeliverData':
-    MailPipeTo(cmd string, args ...string) (output string, err error)
-	MatchRecipients(patterns ...string) (ok bool, err error)
   Functions available for templates:
-    parseAddress(address string)(*mail.Address, error)
+  	parseAddress(address string)(*mail.Address, error)
+  Methods available on 'DeliverData':
+  	MatchRecipients(patterns ...string) (ok bool, err error)
+	MailPipeTo(mods []MessageMods, cmd string, args ...string) (output string, err error)
+	Where
+	 '[]MessageMods' can be constructed using following function:
+	  msgmods(m ...MesageMods) []MessageMods
+	
+	type MessageMods interface {
+		Transform(m *MailContent) error
+	}
+
+	Predefined type 'HeaderMod' implements above 'MessageMods' interface.
+  	Following funcs can create a MIME header modifier(value of 'HeaderMod' type):
+  	  deliver_to(address string) HeaderMod
+	  add_hdr(key string, value string) HeaderMod
+	  ins_hdr(key string, value string, idx int) HeaderMod
+	  chg_hdr(key string, value string, idx int) HeaderMod
+	  rm_hdr(key string, idx int) HeaderMod
 
 Make sure your 'externUrl' config is reachable by AWS infrastructure. Once you add subscribers 'externUrl' can't be changed without deleting them.
 On success it will create the sns subscription, which should be confirmed automatically. You can verify it with 'list' subcommand.`, lambdaconf.SnsTagKeySubMgrLambda),

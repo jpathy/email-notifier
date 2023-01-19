@@ -16,7 +16,7 @@ u@h:/tmp/email-notifier/sesrcvr$ ./sesrcvr sub add "arn:aws:sns:eu-west-1:123456
 Access Key Id: MY_ACCESS_KEY
 Secret Access Key: 
 Delivery Template(input line 'ENDTPL' to finish)
-》{{- $t := "catchall@example.com" }}
+》{{- $t := "catchall" }}
 》{{- if ($.MatchRecipients "admin@example.com" "user1@example.com" "user1@user1.example.com") }}
 》  {{- $t = "user1" }}
 》{{- else if ($.MatchRecipients "user2@example.com" "user2@user2.example.com") }}
