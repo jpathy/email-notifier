@@ -1,10 +1,5 @@
 terraform {
   required_version = "~> 1.2"
-  cloud {
-    workspaces {
-      name = "email-notifier"
-    }
-  }
   required_providers {
     aws = {
       source  = "hashicorp/aws"
