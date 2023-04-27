@@ -1,0 +1,16 @@
+github_org = "some_user"
+github_repo = "email-notifier"
+dmarc_addresses = [
+  "rua@dmarc.example.com",
+  "rua@dmarc.example.org",
+]
+ses_domain_addresses = {
+  "example.org" = [
+    "user1@example.org",
+    "user2@example.org"
+  ]
+  "example.com" = [
+    "example.com",
+    ".example.com"
+  ]
+}
