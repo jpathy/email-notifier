@@ -59,7 +59,7 @@ jobs:
     needs: Clean-Prerelease
     runs-on: ubuntu-latest
     container:
-      image: golang:1.18-alpine3.14
+      image: golang:1.21-alpine3.19
 
     steps:
     - name: Install os packages
@@ -77,6 +77,7 @@ jobs:
         echo "::group::vet with shadow tool"
         go install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest >/dev/null
         export PATH="$PATH:$(go env GOPATH)/bin"
+        export CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
         GOARGS=(-tags 'sqlite_json1 sqlite_foreign_keys')
         go vet "${GOARGS[@]}"
         go vet "${GOARGS[@]}" -vettool=$(which shadow)
@@ -122,7 +123,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: cachix/install-nix-action@v18
+    - uses: cachix/install-nix-action@v20
       with:
         nix_path: nixpkgs=channel:nixos-unstable
         extra_nix_config: |
